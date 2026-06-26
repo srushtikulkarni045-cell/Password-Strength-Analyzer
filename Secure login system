@@ -1,1 +1,452 @@
+{
+  "name": "secure-login",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "express-validator": "^7.1.0",
+    "helmet": "^7.1.0",
+    "mongoose": "^8.5.0",
+    "qrcode": "^1.5.3",
+    "speakeasy": "^2.0.0"
+  }
+}
+PORT=3000
+
+MONGO_URI=mongodb://127.0.0.1:27017/loginSystem
+
+SESSION_SECRET=mySuperSecretSessionKey
+require("dotenv").config();
+
+const express = require("express");
+const mongoose = require("mongoose");
+const session = require("express-session");
+const helmet = require("helmet");
+
+const authRoutes = require("./routes/auth");
+
+const app = express();
+
+mongoose.connect(process.env.MONGO_URI);
+
+app.set("view engine", "ejs");
+
+app.use(express.urlencoded({ extended: true }));
+
+app.use(helmet());
+
+app.use(session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        httpOnly: true,
+        secure: false,
+        maxAge: 1000 * 60 * 60
+    }
+}));
+
+app.use("/", authRoutes);
+
+app.listen(process.env.PORT, () => {
+    console.log("Server running...");
+});
+const mongoose = require("mongoose");
+
+const userSchema = new mongoose.Schema({
+
+    username:{
+        type:String,
+        unique:true
+    },
+
+    email:{
+        type:String,
+        unique:true
+    },
+
+    password:{
+        type:String
+    },
+
+    twoFASecret:{
+        type:String,
+        default:null
+    },
+
+    twoFAEnabled:{
+        type:Boolean,
+        default:false
+    }
+
+});
+
+module.exports = mongoose.model("User", userSchema);
+module.exports=(req,res,next)=>{
+
+    if(req.session.user){
+
+        next();
+
+    }else{
+
+        res.redirect("/login");
+
+    }
+
+}
+const express=require("express");
+const bcrypt=require("bcrypt");
+const {body,validationResult}=require("express-validator");
+const User=require("../models/User");
+const auth=require("../middleware/authMiddleware");
+const speakeasy=require("speakeasy");
+const QRCode=require("qrcode");
+
+const router=express.Router();
+
+router.get("/",(req,res)=>{
+    res.redirect("/login");
+});
+
+router.get("/register",(req,res)=>{
+    res.render("register");
+});
+
+router.post("/register",
+
+[
+body("username").isLength({min:3}),
+body("email").isEmail(),
+body("password").isLength({min:6})
+],
+
+async(req,res)=>{
+
+const errors=validationResult(req);
+
+if(!errors.isEmpty()){
+
+return res.send(errors.array());
+
+}
+
+const {username,email,password}=req.body;
+
+const hash=await bcrypt.hash(password,12);
+
+await User.create({
+
+username,
+
+email,
+
+password:hash
+
+});
+
+res.redirect("/login");
+
+});
+
+router.get("/login",(req,res)=>{
+
+res.render("login");
+
+});
+
+router.post("/login",async(req,res)=>{
+
+const {email,password,token}=req.body;
+
+const user=await User.findOne({email});
+
+if(!user)
+
+return res.send("Invalid credentials");
+
+const match=await bcrypt.compare(password,user.password);
+
+if(!match)
+
+return res.send("Invalid credentials");
+
+if(user.twoFAEnabled){
+
+const verified=speakeasy.totp.verify({
+
+secret:user.twoFASecret,
+
+encoding:"base32",
+
+token
+
+});
+
+if(!verified)
+
+return res.send("Invalid 2FA");
+
+}
+
+req.session.user=user;
+
+res.redirect("/dashboard");
+
+});
+
+router.get("/dashboard",auth,(req,res)=>{
+
+res.render("dashboard",{user:req.session.user});
+
+});
+
+router.get("/logout",(req,res)=>{
+
+req.session.destroy(()=>{
+
+res.redirect("/login");
+
+});
+
+});
+
+router.get("/setup2fa",auth,async(req,res)=>{
+
+const secret=speakeasy.generateSecret();
+
+req.session.secret=secret.base32;
+
+const qr=await QRCode.toDataURL(secret.otpauth_url);
+
+res.render("setup2fa",{qr});
+
+});
+
+router.post("/setup2fa",auth,async(req,res)=>{
+
+const token=req.body.token;
+
+const verified=speakeasy.totp.verify({
+
+secret:req.session.secret,
+
+encoding:"base32",
+
+token
+
+});
+
+if(!verified)
+
+return res.send("Wrong Code");
+
+await User.findByIdAndUpdate(req.session.user._id,{
+
+twoFASecret:req.session.secret,
+
+twoFAEnabled:true
+
+});
+
+res.send("2FA Enabled");
+
+});
+
+module.exports=router;
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<title>Register</title>
+
+</head>
+
+<body>
+
+<h2>Register</h2>
+
+<form method="POST">
+
+<input name="username" placeholder="Username">
+
+<br><br>
+
+<input name="email" placeholder="Email">
+
+<br><br>
+
+<input name="password" type="password" placeholder="Password">
+
+<br><br>
+
+<button>Register</button>
+
+</form>
+
+<a href="/login">Login</a>
+
+</body>
+
+</html>
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<title>Login</title>
+
+</head>
+
+<body>
+
+<h2>Login</h2>
+
+<form method="POST">
+
+<input name="email" placeholder="Email">
+
+<br><br>
+
+<input type="password" name="password" placeholder="Password">
+
+<br><br>
+
+<input name="token" placeholder="2FA Code (optional)">
+
+<br><br>
+
+<button>Login</button>
+
+</form>
+
+<a href="/register">Register</a>
+
+</body>
+
+</html>
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<title>Login</title>
+
+</head>
+
+<body>
+
+<h2>Login</h2>
+
+<form method="POST">
+
+<input name="email" placeholder="Email">
+
+<br><br>
+
+<input type="password" name="password" placeholder="Password">
+
+<br><br>
+
+<input name="token" placeholder="2FA Code (optional)">
+
+<br><br>
+
+<button>Login</button>
+
+</form>
+
+<a href="/register">Register</a>
+
+</body>
+
+</html>
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<title>Dashboard</title>
+
+</head>
+
+<body>
+
+<h2>Welcome <%= user.username %></h2>
+
+<a href="/setup2fa">Enable 2FA</a>
+
+<br><br>
+
+<a href="/logout">Logout</a>
+
+</body>
+
+</html>
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<title>2FA</title>
+
+</head>
+
+<body>
+
+<h2>Scan QR Code</h2>
+
+<img src="<%= qr %>">
+
+<form method="POST">
+
+<input name="token" placeholder="OTP">
+
+<button>Verify</button>
+
+</form>
+
+</body>
+
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
